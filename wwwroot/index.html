@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MasterCard</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --line: #262b36;
+    --text: #e6e8ee;
+    --muted: #8b93a5;
+    --accent: #6ea8fe;
+    --accent-ink: #0b1220;
+    --ok: #5fd0a0;
+    --err: #ff7b7b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { min-height: 100vh; display: flex; justify-content: center; padding: 40px 16px; }
+  main { width: 100%; max-width: 560px; }
+  main.wide { max-width: 860px; }
+  h1 { font-size: 22px; margin: 0 0 4px; font-weight: 650; }
+  h2 { font-size: 16px; margin: 0 0 12px; font-weight: 600; }
+  p.sub { margin: 0 0 24px; color: var(--muted); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 20px; margin-bottom: 16px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+  input { width: 100%; padding: 10px 12px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+  input:focus, button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button { margin-top: 16px; padding: 10px 16px; border: 0; border-radius: 8px; cursor: pointer;
+    background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600; }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  button.small { margin: 0; padding: 6px 12px; font-size: 13px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row button { margin-top: 16px; }
+  .links { margin-top: 16px; display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; }
+  a { color: var(--accent); cursor: pointer; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  #msg { min-height: 20px; margin-bottom: 12px; font-size: 14px; }
+  #msg.ok { color: var(--ok); } #msg.err { color: var(--err); }
+  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  nav { display: flex; gap: 6px; margin-bottom: 20px; }
+  nav button { margin: 0; background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  nav button.on { color: var(--text); border-color: var(--accent); }
+  dl { display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px; margin: 0; }
+  dt { color: var(--muted); } dd { margin: 0; word-break: break-all; }
+  .key { font-family: ui-monospace, Consolas, monospace; background: var(--bg);
+    border: 1px dashed var(--line); padding: 10px; border-radius: 8px; word-break: break-all; margin-top: 8px; }
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; }
+  .empty { color: var(--muted); }
+  .big { font-size: 32px; font-weight: 650; }
+  th.num, td.num { text-align: right; }
+</style>
+</head>
+<body>
+<main id="app"></main>
+
+<script>
+const $app = document.getElementById('app');
+const BASE = '/Api';           
+let me = null;                 
+let view = 'login';
+let tab = 'account';
+let ctx = {};                  
+
+async function api(method, path, body) {
+  try {
+    const res = await fetch(BASE + path, {
+      method,
+      credentials: 'include',  
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined
+    });
+    let data = null;
+    try { data = await res.json(); } catch {}
+    return { ok: res.ok, status: res.status, data };
+  } catch {
+    return { ok: false, status: 0, data: { message: 'Cannot reach the server.' } };
+  }
+}
+
+function errText(r) {
+  const d = r.data || {};
+  if (d.message) return d.message;
+  if (d.errors) return Object.values(d.errors).flat().join(' ');
+  if (d.title) return d.title;
+  if (r.status === 401) return 'You are not signed in.';
+  if (r.status === 403) return 'You do not have access to this.';
+  return 'Something went wrong (' + r.status + ').';
+}
+
+function say(text, ok) {
+  const m = document.getElementById('msg');
+  if (!m) return;
+  m.textContent = text || '';
+  m.className = ok ? 'ok' : 'err';
+}
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const val = id => document.getElementById(id).value.trim();
+const field = (id, label, type = 'text', v = '', extra = '') =>
+  `<label for="${id}">${label}</label><input id="${id}" type="${type}" value="${esc(v)}" ${extra}>`;
+
+function go(v) { view = v; render(); }
+
+/* ---------- views ---------- */
+const views = {
+  login: () => ({
+    title: 'Sign in', sub: 'Welcome back.',
+    html: `<div class="card">
+      ${field('email','Email','email','', 'autocomplete="username"')}
+      ${field('password','Password','password','', 'autocomplete="current-password"')}
+      <button id="go">Sign in</button>
+      <div class="links"><a data-go="register">Create account</a><a data-go="forgot">Forgot password?</a></div>
+    </div>`,
+    bind() {
+      const submit = async () => {
+        const r = await api('POST', '/Auth/Login', { email: val('email'), password: val('password') });
+        if (!r.ok) return say(errText(r));
+        if (r.data.requiresTwoFactor) return go('twofa-login');
+        await boot();
+      };
+      document.getElementById('go').onclick = submit;
+      document.getElementById('password').onkeydown = e => { if (e.key === 'Enter') submit(); };
+    }
+  }),
+
+  'twofa-login': () => ({
+    title: 'Two-factor code', sub: 'Enter the 6-digit code from your authenticator app.',
+    html: `<div class="card">
+      ${field('code','Code','text','', 'inputmode="numeric" autocomplete="one-time-code"')}
+      <button id="go">Verify</button>
+      <div class="links"><a data-go="login">Back to sign in</a></div>
+    </div>`,
+    bind() {
+      const submit = async () => {
+        const r = await api('POST', '/Auth/Login/2FA', { code: val('code') });
+        if (!r.ok) return say(errText(r));
+        await boot();
+      };
+      document.getElementById('go').onclick = submit;
+      document.getElementById('code').onkeydown = e => { if (e.key === 'Enter') submit(); };
+    }
+  }),
+
+  register: () => ({
+    title: 'Create account', sub: 'It only takes a moment.',
+    html: `<div class="card">
+      ${field('email','Email','email')}
+      ${field('password','Password','password','', 'autocomplete="new-password"')}
+      <button id="go">Create account</button>
+      <div class="links"><a data-go="login">Already have an account?</a></div>
+    </div>`,
+    bind() {
+      document.getElementById('go').onclick = async () => {
+        const r = await api('POST', '/Auth/Register', {
+          email: val('email'), password: val('password')
+        });
+        if (!r.ok) return say(errText(r));
+        go('login'); say('Account created. You can sign in now.', true);
+      };
+    }
+  }),
+
+  forgot: () => ({
+    title: 'Reset password', sub: 'Step 1 of 3: we will send you a reset code.',
+    html: `<div class="card">
+      ${field('email','Email','email', ctx.email || '')}
+      <button id="go">Send code</button>
+      <div class="links"><a data-go="login">Back to sign in</a></div>
+    </div>`,
+    bind() {
+      document.getElementById('go').onclick = async () => {
+        ctx.email = val('email');
+        const r = await api('POST', '/Auth/Forgot-Password', { email: ctx.email });
+        if (!r.ok) return say(errText(r));
+        ctx.code = r.data.resetCode || '';
+        go('verify'); say(r.data.message || 'Code sent.', true);
+      };
+    }
+  }),
+
+  verify: () => ({
+    title: 'Enter reset code', sub: 'Step 2 of 3.',
+    html: `<div class="card">
+      ${field('email','Email','email', ctx.email || '')}
+      ${field('code','Reset code','text', ctx.code || '')}
+      <button id="go">Verify code</button>
+      <div class="links"><a data-go="login">Back to sign in</a></div>
+    </div>`,
+    bind() {
+      document.getElementById('go').onclick = async () => {
+        ctx.email = val('email'); ctx.code = val('code');
+        const r = await api('POST', '/Auth/Verify_Reset-Code', { email: ctx.email, code: ctx.code });
+        if (!r.ok) return say(errText(r));
+        go('reset'); say(r.data.message || 'Code verified.', true);
+      };
+    }
+  }),
+
+  reset: () => ({
+    title: 'Choose a new password', sub: 'Step 3 of 3.',
+    html: `<div class="card">
+      ${field('email','Email','email', ctx.email || '')}
+      ${field('newPassword','New password','password','', 'autocomplete="new-password"')}
+      <button id="go">Save new password</button>
+    </div>`,
+    bind() {
+      document.getElementById('go').onclick = async () => {
+        const r = await api('POST', '/Auth/Reset-Password', {
+          email: val('email'), resetToken: ctx.code, newPassword: val('newPassword')
+        });
+        if (!r.ok) return say(errText(r));
+        ctx = {}; go('login'); say('Password changed. Sign in with your new password.', true);
+      };
+    }
+  })
+};
+
+let adminSection = 'charges';
+const isAdmin = () => !Array.isArray(me.roles) || me.roles.includes('Admin');
+
+function dashboard() {
+  const tabs = `<nav>
+    <button data-tab="wallet" class="${tab==='wallet'?'on':''}">Wallet</button>
+    <button data-tab="account" class="${tab==='account'?'on':''}">Account</button>
+    <button data-tab="security" class="${tab==='security'?'on':''}">Security</button>
+    ${isAdmin() ? `<button data-tab="admin" class="${tab==='admin'?'on':''}">Admin</button>` : ''}
+  </nav>`;
+  return {
+    wide: tab === 'admin' || tab === 'wallet',
+    title: 'Hello, ' + esc(me.userName || me.email),
+    sub: 'You are signed in.',
+    html: `<header><span></span><button class="ghost small" id="logout">Sign out</button></header>${tabs}<div id="pane"></div>`,
+    bind() {
+      document.getElementById('logout').onclick = async () => {
+        await api('POST', '/Auth/Logout'); me = null; go('login'); say('Signed out.', true);
+      };
+      document.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
+      ({ wallet: paneWallet, account: paneAccount, security: paneSecurity, admin: paneAdmin })[tab]();
+    }
+  };
+}
+
+const money = n => Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const when = s => { const d = new Date(s.endsWith('Z') || /[+-]\d\d:\d\d$/.test(s) ? s : s + 'Z'); return isNaN(d) ? '-' : d.toLocaleString(); };
+
+async function paneWallet() {
+  document.getElementById('pane').innerHTML = `
+    ${me.balance !== undefined ? `<div class="card"><h2>Balance</h2><div class="big">${money(me.balance)}</div></div>` : ''}
+    <div class="card"><h2>Request a charge</h2>
+      <p class="empty" style="margin:0">An admin has to approve it before your balance changes.</p>
+      ${field('ccode','Charge code (6 digits)','text','', 'inputmode="numeric" maxlength="6"')}
+      ${field('camount','Amount','number','', 'min="0" step="0.01"')}
+      <button id="req">Send request</button>
+    </div>
+    <div class="card"><h2>Transactions</h2><div id="tx" class="scroll empty">Loading...</div></div>`;
+  document.getElementById('req').onclick = async () => {
+    const r = await api('POST', '/Charge', { code: val('ccode'), amount: Number(val('camount')) });
+    say(r.ok ? (r.data.message || 'Charge request sent.') : errText(r), r.ok);
+    if (r.ok) { document.getElementById('ccode').value = ''; document.getElementById('camount').value = ''; }
+  };
+  const tx = document.getElementById('tx');
+  const r = await api('GET', '/Transactions');
+  if (!r.ok) { tx.textContent = errText(r); return; }
+  if (!r.data.length) { tx.textContent = 'No transactions yet.'; return; }
+  tx.className = 'scroll';
+  tx.innerHTML = `<table><thead><tr><th>Date</th><th>Type</th><th>Description</th><th class="num">Amount</th></tr></thead><tbody>
+    ${r.data.map(t => `<tr><td>${esc(when(t.createdAt))}</td><td>${esc(t.type)}</td><td>${esc(t.description)}</td><td class="num">${money(t.amount)}</td></tr>`).join('')}
+  </tbody></table>`;
+}
+
+function paneAccount() {
+  const d = new Date(me.createdAt);
+  document.getElementById('pane').innerHTML = `
+    <div class="card"><h2>Account balance</h2>
+      <div class="big">${me.balance === undefined ? '-' : money(me.balance)}</div></div>
+    <div class="card"><h2>Profile</h2><dl>
+      <dt>Email</dt><dd>${esc(me.email)}</dd>
+      <dt>Status</dt><dd>${me.isActive ? 'Active' : 'Inactive'}</dd>
+      <dt>Two-factor</dt><dd>${me.twoFactorEnabled ? 'On' : 'Off'}</dd>
+      <dt>Member since</dt><dd>${isNaN(d) ? '-' : d.toLocaleDateString()}</dd>
+    </dl></div>`;
+}
+
+function paneSecurity() {
+  document.getElementById('pane').innerHTML = `
+    <div class="card"><h2>Change password</h2>
+      ${field('cur','Current password','password')}
+      ${field('nw','New password','password')}
+      <button id="chg">Change password</button>
+    </div>
+    <div class="card"><h2>Two-factor authentication</h2>
+      <div id="tf"></div>
+    </div>`;
+  document.getElementById('chg').onclick = async () => {
+    const r = await api('POST', '/Auth/Change-Password', { currentPassword: val('cur'), newPassword: val('nw') });
+    say(r.ok ? (r.data.message || 'Password changed.') : errText(r), r.ok);
+    if (r.ok) { document.getElementById('cur').value = ''; document.getElementById('nw').value = ''; }
+  };
+  renderTwoFactor();
+}
+
+function renderTwoFactor(key) {
+  const box = document.getElementById('tf');
+  if (me.twoFactorEnabled) {
+    box.innerHTML = `<p class="empty">Two-factor is on. Enter a code to turn it off.</p>
+      ${field('tcode','Code','text','', 'inputmode="numeric"')}
+      <button id="dis">Turn off</button>`;
+    document.getElementById('dis').onclick = async () => {
+      const r = await api('POST', '/Auth/2FA/Disable', { code: val('tcode') });
+      say(r.ok ? (r.data.message || 'Two-factor turned off.') : errText(r), r.ok);
+      if (r.ok) { me.twoFactorEnabled = false; renderTwoFactor(); }
+    };
+  } else if (!key) {
+    box.innerHTML = `<p class="empty">Two-factor is off. Get a key to add this account to your authenticator app.</p>
+      <button id="setup">Get setup key</button>`;
+    document.getElementById('setup').onclick = async () => {
+      const r = await api('GET', '/Auth/2FA/Setup');
+      if (!r.ok) return say(errText(r));
+      renderTwoFactor(r.data.sharedKey);
+    };
+  } else {
+    box.innerHTML = `<p class="empty">Enter this key in your authenticator app, then type the code it shows.</p>
+      <div class="key">${esc(key)}</div>
+      ${field('tcode','Code','text','', 'inputmode="numeric"')}
+      <button id="en">Turn on</button>`;
+    document.getElementById('en').onclick = async () => {
+      const r = await api('POST', '/Auth/2FA/Enable', { code: val('tcode') });
+      say(r.ok ? (r.data.message || 'Two-factor turned on.') : errText(r), r.ok);
+      if (r.ok) { me.twoFactorEnabled = true; renderTwoFactor(); }
+    };
+  }
+}
+
+function paneAdmin() {
+  document.getElementById('pane').innerHTML = `
+    <nav id="sub">
+      <button data-sec="charges" class="${adminSection==='charges'?'on':''}">Charge requests</button>
+      <button data-sec="users" class="${adminSection==='users'?'on':''}">Users</button>
+    </nav><div id="sec"></div>`;
+  document.querySelectorAll('[data-sec]').forEach(b => b.onclick = () => { adminSection = b.dataset.sec; paneAdmin(); });
+  (adminSection === 'users' ? adminUsers : adminCharges)();
+}
+
+async function adminUsers() {
+  const sec = document.getElementById('sec');
+  sec.innerHTML = `<div class="card"><h2>All users</h2><div id="ulist" class="scroll empty">Loading...</div></div>`;
+  const list = document.getElementById('ulist');
+  const r = await api('GET', '/Admin/Users');
+  if (!r.ok) { list.textContent = r.status === 403 ? 'Only admins can see this page.' : errText(r); return; }
+  if (!r.data.length) { list.textContent = 'No users yet.'; return; }
+  list.className = 'scroll';
+  list.innerHTML = `<table><thead><tr><th>Email</th><th>Phone</th><th>Roles</th><th>Status</th><th>2FA</th><th class="num">Balance</th><th>Joined</th><th>Id</th></tr></thead><tbody>
+    ${r.data.map(u => `<tr><td>${esc(u.email)}</td><td>${esc(u.phoneNumber) || '-'}</td>
+    <td>${esc((u.roles || []).join(', ')) || '-'}</td><td>${u.isActive ? 'Active' : 'Inactive'}</td>
+    <td>${u.twoFactorEnabled ? 'On' : 'Off'}</td><td class="num">${money(u.balance)}</td>
+    <td>${esc(when(u.createdAt))}</td><td class="empty">${esc(u.id)}</td></tr>`).join('')}
+  </tbody></table>`;
+}
+
+async function adminCharges() {
+  const sec = document.getElementById('sec');
+  sec.innerHTML = `<div class="card"><h2>Pending charge requests</h2><div id="list" class="scroll empty">Loading...</div></div>`;
+  const list = document.getElementById('list');
+  const r = await api('GET', '/Admin/Charges');
+  if (!r.ok) { list.textContent = r.status === 403 ? 'Only admins can see this page.' : errText(r); return; }
+  const rows = Array.isArray(r.data) ? r.data : [];
+  if (!rows.length) { list.textContent = 'No pending requests.'; return; }
+  list.className = 'scroll';
+  list.innerHTML = `<table><thead><tr><th>Date</th><th>User</th><th>Code</th><th class="num">Amount</th><th></th></tr></thead><tbody>
+    ${rows.map(c => `<tr><td>${esc(when(c.createdAt))}</td><td>${esc(c.userEmail)}</td><td>${esc(c.code)}</td>
+    <td class="num">${money(c.amount)}</td><td><button class="small" data-id="${esc(c.id)}">Approve</button></td></tr>`).join('')}
+  </tbody></table>`;
+  list.querySelectorAll('button[data-id]').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    const a = await api('POST', '/Admin/Charges/Approve', { id: Number(b.dataset.id) });
+    say(a.ok ? (a.data.message || 'Charge approved.') : errText(a), a.ok);
+    if (a.ok) adminCharges(); else b.disabled = false;
+  });
+}
+
+function render() {
+  const keepMsg = document.getElementById('msg')?.textContent;
+  const keepCls = document.getElementById('msg')?.className;
+  const v = me ? dashboard() : views[view]();
+  $app.className = v.wide ? 'wide' : '';
+  $app.innerHTML = `<h1>${v.title}</h1><p class="sub">${v.sub}</p><div id="msg" role="status"></div>${v.html}`;
+  if (keepMsg) { const m = document.getElementById('msg'); m.textContent = keepMsg; m.className = keepCls; }
+  $app.querySelectorAll('[data-go]').forEach(a => a.onclick = () => { say(''); go(a.dataset.go); });
+  v.bind();
+}
+
+async function boot() {
+  const r = await api('GET', '/Auth/Me');
+  me = r.ok ? r.data : null;
+  if (me) tab = 'wallet';
+  render();
+}
+
+boot();
+</script>
+</body>
+</html>

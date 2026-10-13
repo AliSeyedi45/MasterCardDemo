@@ -1,0 +1,6 @@
+@MasterCard_HostAddress = http://localhost:5074
+
+GET {{MasterCard_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
