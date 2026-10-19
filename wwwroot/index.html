@@ -64,18 +64,19 @@
 <main id="app"></main>
 
 <script>
+/* ---------- helpers ---------- */
 const $app = document.getElementById('app');
-const BASE = '/Api';           
-let me = null;                 
+const BASE = '/Api';            // change if your API lives elsewhere, e.g. 'https://localhost:7001/Api'
+let me = null;                  // current user
 let view = 'login';
 let tab = 'account';
-let ctx = {};                  
+let ctx = {};                   // small bag for values passed between steps (email, reset code)
 
 async function api(method, path, body) {
   try {
     const res = await fetch(BASE + path, {
       method,
-      credentials: 'include',  
+      credentials: 'include',   // send the login cookie
       headers: body ? { 'Content-Type': 'application/json' } : {},
       body: body ? JSON.stringify(body) : undefined
     });
@@ -225,6 +226,7 @@ const views = {
   })
 };
 
+/* ---------- signed-in area ---------- */
 let adminSection = 'charges';
 const isAdmin = () => !Array.isArray(me.roles) || me.roles.includes('Admin');
 
@@ -262,11 +264,29 @@ async function paneWallet() {
       ${field('camount','Amount','number','', 'min="0" step="0.01"')}
       <button id="req">Send request</button>
     </div>
+    <div class="card"><h2>Send money</h2>
+      <p class="empty" style="margin:0">Ask the person for their account ID. They can copy it from their Account tab.</p>
+      ${field('rid','Receiver account ID')}
+      ${field('tamount','Amount','number','', 'min="0" step="0.01"')}
+      ${field('tdesc','Note (optional)')}
+      <button id="send">Send</button>
+    </div>
     <div class="card"><h2>Transactions</h2><div id="tx" class="scroll empty">Loading...</div></div>`;
   document.getElementById('req').onclick = async () => {
     const r = await api('POST', '/Charge', { code: val('ccode'), amount: Number(val('camount')) });
     say(r.ok ? (r.data.message || 'Charge request sent.') : errText(r), r.ok);
     if (r.ok) { document.getElementById('ccode').value = ''; document.getElementById('camount').value = ''; }
+  };
+  document.getElementById('send').onclick = async () => {
+    const r = await api('POST', '/transfers', {
+      receiverUserId: val('rid'), amount: Number(val('tamount')), description: val('tdesc')
+    });
+    say(r.ok ? (r.data.message || 'Transfer completed.') : errText(r), r.ok);
+    if (r.ok) {
+      const m = await api('GET', '/Auth/Me');
+      if (m.ok) me = m.data;
+      paneWallet();
+    }
   };
   const tx = document.getElementById('tx');
   const r = await api('GET', '/Transactions');
@@ -274,17 +294,25 @@ async function paneWallet() {
   if (!r.data.length) { tx.textContent = 'No transactions yet.'; return; }
   tx.className = 'scroll';
   tx.innerHTML = `<table><thead><tr><th>Date</th><th>Type</th><th>Description</th><th class="num">Amount</th></tr></thead><tbody>
-    ${r.data.map(t => `<tr><td>${esc(when(t.createdAt))}</td><td>${esc(t.type)}</td><td>${esc(t.description)}</td><td class="num">${money(t.amount)}</td></tr>`).join('')}
+    ${r.data.map(t => `<tr><td>${esc(when(t.createdAt))}</td><td>${esc(String(t.type).replace(/([a-z])([A-Z])/g, '$1 $2'))}</td><td>${esc(t.description)}</td><td class="num">${/out/i.test(t.type) ? '-' : '+'}${money(t.amount)}</td></tr>`).join('')}
   </tbody></table>`;
 }
 
 function paneAccount() {
   const d = new Date(me.createdAt);
+  setTimeout(() => {
+    const c = document.getElementById('copyid');
+    if (c) c.onclick = async () => {
+      try { await navigator.clipboard.writeText(me.id); say('Account ID copied.', true); }
+      catch { say('Copy failed. Select the ID and copy it manually.'); }
+    };
+  });
   document.getElementById('pane').innerHTML = `
     <div class="card"><h2>Account balance</h2>
       <div class="big">${me.balance === undefined ? '-' : money(me.balance)}</div></div>
     <div class="card"><h2>Profile</h2><dl>
       <dt>Email</dt><dd>${esc(me.email)}</dd>
+      <dt>Account ID</dt><dd>${esc(me.id)} <button class="ghost small" id="copyid" style="margin-left:6px">Copy</button></dd>
       <dt>Status</dt><dd>${me.isActive ? 'Active' : 'Inactive'}</dd>
       <dt>Two-factor</dt><dd>${me.twoFactorEnabled ? 'On' : 'Off'}</dd>
       <dt>Member since</dt><dd>${isNaN(d) ? '-' : d.toLocaleDateString()}</dd>
@@ -359,12 +387,19 @@ async function adminUsers() {
   if (!r.ok) { list.textContent = r.status === 403 ? 'Only admins can see this page.' : errText(r); return; }
   if (!r.data.length) { list.textContent = 'No users yet.'; return; }
   list.className = 'scroll';
-  list.innerHTML = `<table><thead><tr><th>Email</th><th>Phone</th><th>Roles</th><th>Status</th><th>2FA</th><th class="num">Balance</th><th>Joined</th><th>Id</th></tr></thead><tbody>
+  list.innerHTML = `<table><thead><tr><th>Email</th><th>Phone</th><th>Roles</th><th>Status</th><th>2FA</th><th class="num">Balance</th><th>Joined</th><th>Id</th><th></th></tr></thead><tbody>
     ${r.data.map(u => `<tr><td>${esc(u.email)}</td><td>${esc(u.phoneNumber) || '-'}</td>
     <td>${esc((u.roles || []).join(', ')) || '-'}</td><td>${u.isActive ? 'Active' : 'Inactive'}</td>
     <td>${u.twoFactorEnabled ? 'On' : 'Off'}</td><td class="num">${money(u.balance)}</td>
-    <td>${esc(when(u.createdAt))}</td><td class="empty">${esc(u.id)}</td></tr>`).join('')}
+    <td>${esc(when(u.createdAt))}</td><td class="empty">${esc(u.id)}</td>
+    <td>${u.id === me.id ? '' : `<button class="small ${u.isActive ? 'ghost' : ''}" data-uid="${esc(u.id)}" data-act="${u.isActive ? 0 : 1}">${u.isActive ? 'Deactivate' : 'Activate'}</button>`}</td></tr>`).join('')}
   </tbody></table>`;
+  list.querySelectorAll('button[data-uid]').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    const a = await api('POST', '/Admin/Users/SetActive', { userId: b.dataset.uid, isActive: b.dataset.act === '1' });
+    say(a.ok ? (a.data.message || 'User updated.') : errText(a), a.ok);
+    adminUsers();
+  });
 }
 
 async function adminCharges() {
@@ -388,6 +423,7 @@ async function adminCharges() {
   });
 }
 
+/* ---------- render / boot ---------- */
 function render() {
   const keepMsg = document.getElementById('msg')?.textContent;
   const keepCls = document.getElementById('msg')?.className;

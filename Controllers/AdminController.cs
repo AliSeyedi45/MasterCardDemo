@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 namespace MasterCard.Controllers;
 [ApiController]
 [Route("Api/Admin")]
@@ -59,6 +60,35 @@ public class AdminController : ControllerBase
         return Ok(new
         {
             message = result.Message
+        });
+    }
+    [HttpPost("Users/SetActive")]
+    public async Task<IActionResult> SetUserActive(SetUserActiveRequest request)
+    {
+        var currentUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (request.UserId == currentUserId && !request.IsActive)
+            return BadRequest(new 
+            { 
+                message = "You cannot deactivate your own account." 
+            });
+        var user = await _userManager.FindByIdAsync(request.UserId);
+        if (user == null)
+            return NotFound(new 
+            { 
+                message = "User not found." 
+            });
+        user.IsActive = request.IsActive;
+        var result = await _userManager.UpdateAsync(user);
+        if (!result.Succeeded)
+            return BadRequest(new 
+            { 
+                message = string.Join(", ", result.Errors.Select(e => e.Description)) 
+            });
+        if (!request.IsActive)
+            await _userManager.UpdateSecurityStampAsync(user);
+        return Ok(new 
+        { 
+            message = request.IsActive ? "User activated." : "User deactivated." 
         });
     }
 }

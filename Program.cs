@@ -23,6 +23,7 @@ builder.Services.Configure<SecurityStampValidatorOptions>(
     });
 builder.Services.AddControllers();
 builder.Services.AddScoped<AuthService>();
+builder.Services.AddScoped<TransferService>();
 builder.Services.AddScoped<TransactionService>();
 builder.Services.AddScoped<ChargeService>();
 builder.Services.AddAuthorization();

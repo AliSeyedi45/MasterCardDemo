@@ -6,8 +6,7 @@ namespace MasterCard.Services;
 public class ChargeService
 {
     private readonly ApplicationDbContext _context;
-    public ChargeService(
-        ApplicationDbContext context)
+    public ChargeService(ApplicationDbContext context)
     {
         _context = context;
     }
