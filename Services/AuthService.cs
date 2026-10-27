@@ -11,14 +11,20 @@ public class AuthService
     private readonly UserManager<ApplicationUser> _userManager;
     private readonly SignInManager<ApplicationUser> _signInManager;
     private readonly ApplicationDbContext _context;
+    private readonly IEmailService _emailService;
+    private readonly ILogger<AuthService> _logger;
     public AuthService(
-        UserManager<ApplicationUser> userManager,
-        SignInManager<ApplicationUser> signInManager,
-        ApplicationDbContext context)
+    UserManager<ApplicationUser> userManager,
+    SignInManager<ApplicationUser> signInManager,
+    ApplicationDbContext context,
+    IEmailService emailService,
+    ILogger<AuthService> logger)
     {
         _userManager = userManager;
         _signInManager = signInManager;
         _context = context;
+        _emailService = emailService;
+        _logger = logger;
     }
     public async Task<(bool Success, string Message, string? UserId)>
         RegisterAsync(RegisterRequest request)
@@ -74,7 +80,31 @@ public class AuthService
         }
         if (result.RequiresTwoFactor)
         {
-            return (true,"Two-factor authentication code is required.",true);
+            if (string.IsNullOrWhiteSpace(user.Email))
+            {
+                return (false,"Unable to send the verification code.",false);
+            }
+            try
+            {
+                var code = await _userManager.GenerateTwoFactorTokenAsync(
+                    user,
+                    TokenOptions.DefaultEmailProvider);
+                await _emailService.SendAsync(user.Email,
+                    "MasterCard - Login Verification",
+                    $"Your login verification code is {code}.",
+                    $"""
+            <h2>Login Verification</h2>
+            <p>Your verification code is:</p>
+            <h1>{code}</h1>
+            <p>If you did not attempt to log in, secure your account.</p>
+            """);
+                return (true,"A verification code has been sent to your email.",true);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send a two-factor login email.");
+                return (false,"Unable to send the verification code. Please try again.",false);
+            }
         }
         if (!result.Succeeded)
         {
@@ -105,22 +135,26 @@ public class AuthService
         }
         return (true,"Password Changed Successfully");
     }
-    public async Task<(bool Success, string Message, string? Code)>
+    public async Task<(bool Success, string Message)>
         ForgotPasswordAsync(string email)
     {
+        const string message = "If this email exists, a password reset code has been sent.";
         var user = await _userManager.FindByEmailAsync(email);
-        if (user == null || !user.IsActive)
+        if (user == null || !user.IsActive ||
+            string.IsNullOrWhiteSpace(user.Email))
         {
-            return (true,"If this email exists, a password reset code has been created.",null);
+            return (true, message);
         }
         var oldCodes = await _context.PasswordResetCodes
-                .Where(x => x.UserId == user.Id && !x.IsUsed)
-                .ToListAsync();
+            .Where(x => x.UserId == user.Id && !x.IsUsed)
+            .ToListAsync();
         foreach (var oldCode in oldCodes)
         {
             oldCode.IsUsed = true;
         }
-        var code = RandomNumberGenerator.GetInt32(100000, 1000000).ToString();
+        var code = RandomNumberGenerator
+            .GetInt32(100000, 1000000)
+            .ToString();
         var now = DateTime.UtcNow;
         var resetCode = new PasswordResetCode
         {
@@ -132,7 +166,28 @@ public class AuthService
         };
         _context.PasswordResetCodes.Add(resetCode);
         await _context.SaveChangesAsync();
-        return (true,"Password reset code created successfully.",code);
+        try
+        {
+            await _emailService.SendAsync(user.Email,
+                "MasterCard - Password Reset",
+                $"Your password reset code is {code}. " +
+                "It expires in 5 minutes.",
+                $"""
+            <h2>Password Reset</h2>
+            <p>Your password reset code is:</p>
+            <h1>{code}</h1>
+            <p>This code expires in 5 minutes.</p>
+            <p>If you did not request this, ignore this email.</p>
+            """);
+            return (true, message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send a password reset email.");
+            resetCode.IsUsed = true;
+            await _context.SaveChangesAsync();
+            return (true, message);
+        }
     }
     public async Task<(bool Success, string Message)>
         VerifyResetCodeAsync(
@@ -214,26 +269,22 @@ public class AuthService
         return (true,"Authenticator key generated successfully.",key);
     }
     public async Task<(bool Success, string Message)>
-        EnableTwoFactorAsync(
-            ApplicationUser user,
-            string code)
+        EnableTwoFactorAsync(ApplicationUser user, string code)
     {
-        var isValid = await _userManager.VerifyTwoFactorTokenAsync(user,_userManager
-                    .Options
-                    .Tokens
-                    .AuthenticatorTokenProvider,
-                code);
+        if (!user.IsActive)
+            return (false, "This account is inactive.");
+        var isValid = await _userManager.VerifyTwoFactorTokenAsync(
+            user,
+            TokenOptions.DefaultEmailProvider,
+            code);
         if (!isValid)
-        {
-            return (false,"Invalid authenticator code.");
-        }
-        var result = await _userManager.SetTwoFactorEnabledAsync(user,true);
+            return (false, "Invalid or expired verification code.");
+        var result = await _userManager.SetTwoFactorEnabledAsync(user, true);
         if (!result.Succeeded)
         {
-            var errors = string.Join(", ",result.Errors.Select(e => e.Description));
-            return (false,errors);
+            return (false,"Unable to enable two-factor authentication.");
         }
-        return (true,"2F authentication enabled successfully.");
+        return (true, "Email-based two-factor authentication enabled.");
     }
     public async Task<(bool Success, string Message)>
         DisableTwoFactorAsync(
@@ -256,20 +307,47 @@ public class AuthService
     public async Task<(bool Success, string Message)>
     VerifyTwoFactorLoginAsync(string code)
     {
-        var result = await _signInManager.TwoFactorAuthenticatorSignInAsync(code,isPersistent: false,rememberClient: false);
+        var result = await _signInManager.TwoFactorSignInAsync(
+            TokenOptions.DefaultEmailProvider,
+            code,
+            isPersistent: false,
+            rememberClient: false);
         if (result.Succeeded)
-        {
-            return (true,"Login Successful");
-        }
+            return (true, "Login Successful");
         if (result.IsLockedOut)
-        {
-            return (false,"Your account is temporarily locked.");
-        }
+            return (false, "Your account is temporarily locked.");
         if (result.IsNotAllowed)
+            return (false, "Login is not allowed.");
+        return (false, "Invalid verification code.");
+    }
+    public async Task<(bool Success, string Message)>
+    SendTwoFactorSetupCodeAsync(ApplicationUser user)
+    {
+        if (!user.IsActive || string.IsNullOrWhiteSpace(user.Email))
         {
-            return (false,"Login is not allowed.");
+            return (false, "Unable to send a verification code.");
         }
-        return (false,"Invalid authenticator code.");
+        try
+        {
+            var code = await _userManager.GenerateTwoFactorTokenAsync(
+                user,
+                TokenOptions.DefaultEmailProvider);
+            await _emailService.SendAsync(user.Email,
+                "MasterCard - Enable Two-Factor Authentication",
+                $"Your verification code is {code}.",
+                $"""
+            <h2>Enable Two-Factor Authentication</h2>
+            <p>Your verification code is:</p>
+            <h1>{code}</h1>
+            <p>If you did not request this, ignore this email.</p>
+            """);
+            return (true, "A verification code has been sent to your email.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send a two-factor setup email.");
+            return (false, "Unable to send a verification code.");
+        }
     }
     public Task<IList<string>> GetRolesAsync(ApplicationUser user) => _userManager.GetRolesAsync(user);
 }
